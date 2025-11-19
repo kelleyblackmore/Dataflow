@@ -1,0 +1,68 @@
+name: SBOM (Software Bill of Materials)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [published]
+
+jobs:
+  generate-sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install cyclonedx-bom pip-audit
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    
+    - name: Generate CycloneDX SBOM
+      run: |
+        cyclonedx-py requirements -r -i requirements.txt -o sbom-cyclonedx.json --format json
+        cyclonedx-py requirements -r -i requirements.txt -o sbom-cyclonedx.xml --format xml
+    
+    - name: Generate SPDX SBOM using pip-audit
+      run: |
+        pip-audit --desc on -f json -o sbom-vulnerabilities.json
+      continue-on-error: true
+    
+    - name: Upload SBOM Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom-reports
+        path: |
+          sbom-cyclonedx.json
+          sbom-cyclonedx.xml
+          sbom-vulnerabilities.json
+    
+    - name: Attest SBOM
+      uses: actions/attest-sbom@v1
+      with:
+        subject-path: sbom-cyclonedx.json
+        sbom-path: sbom-cyclonedx.json
+      if: github.event_name == 'release'
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v4
+      with:
+        fail-on-severity: moderate
