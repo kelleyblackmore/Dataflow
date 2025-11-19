@@ -12,6 +12,8 @@ jobs:
   dependency-check:
     name: OWASP Dependency Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
     - uses: actions/checkout@v4
@@ -46,6 +48,9 @@ jobs:
   trivy-scan:
     name: Trivy Security Scanner
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     
     steps:
     - uses: actions/checkout@v4
@@ -77,6 +82,8 @@ jobs:
   secret-scanning:
     name: Secret Scanning with Gitleaks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     
     steps:
     - uses: actions/checkout@v4
