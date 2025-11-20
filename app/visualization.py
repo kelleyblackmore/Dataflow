@@ -4,8 +4,12 @@ Visualization module for creating data flow diagrams.
 
 import plotly.graph_objects as go
 from typing import List
+import html
 
 from app.models import TransferStatus
+
+# Maximum number of recent transfers to display
+MAX_RECENT_TRANSFERS = 10
 
 
 def create_flow_diagram(transfers: List[TransferStatus]) -> str:
@@ -186,25 +190,26 @@ def _wrap_diagram_html(plotly_html: str, transfers: List[TransferStatus]) -> str
     Returns:
         Complete HTML page
     """
-    # Create summary table
+    # Create summary table with HTML escaping to prevent XSS
     summary_rows = ""
-    for transfer in transfers[-10:]:  # Show last 10 transfers
+    for transfer in transfers[-MAX_RECENT_TRANSFERS:]:
         status_color = (
             "green"
             if transfer.status == "completed"
             else "red" if transfer.status == "failed" else "orange"
         )
+        # Escape all user-provided data to prevent XSS attacks
         summary_rows += f"""
         <tr>
-            <td>{transfer.transfer_id}</td>
-            <td>{transfer.source_table}</td>
-            <td>{transfer.destination_table}</td>
+            <td>{html.escape(transfer.transfer_id)}</td>
+            <td>{html.escape(transfer.source_table)}</td>
+            <td>{html.escape(transfer.destination_table)}</td>
             <td>{transfer.records_transferred}</td>
-            <td style="color: {status_color}; font-weight: bold;">{transfer.status}</td>
+            <td style="color: {status_color}; font-weight: bold;">{html.escape(transfer.status)}</td>
         </tr>
         """
 
-    html = f"""
+    html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -285,4 +290,4 @@ def _wrap_diagram_html(plotly_html: str, transfers: List[TransferStatus]) -> str
     </body>
     </html>
     """
-    return html
+    return html_content

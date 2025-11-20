@@ -5,8 +5,8 @@ FastAPI application for data transfer between databases with visual flow represe
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict
 import logging
+import os
 
 from app.database import DatabaseManager
 from app.transfer import DataTransferService
@@ -24,18 +24,29 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Add CORS middleware
+# Add CORS middleware with configurable origins
+# In production, set ALLOWED_ORIGINS environment variable to specific origins
+allowed_origins = os.getenv(
+    "ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000"
+).split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Initialize services
 db_manager = DatabaseManager()
 transfer_service = DataTransferService(db_manager)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup resources on application shutdown."""
+    await db_manager.close_all()
+    logger.info("Application shutdown - resources cleaned up")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -166,16 +177,10 @@ async def get_transfer_status(transfer_id: str):
     Returns:
         Current status of the transfer
     """
-    try:
-        status = await transfer_service.get_status(transfer_id)
-        if not status:
-            raise HTTPException(status_code=404, detail="Transfer not found")
-        return status
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
+    status = await transfer_service.get_status(transfer_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Transfer not found")
+    return status
 
 
 @app.get("/flow/visualize", response_class=HTMLResponse)

@@ -20,6 +20,20 @@ class DatabaseManager:
         self.metadata = MetaData()
         self._initialize_default_databases()
 
+    @staticmethod
+    def _rows_to_dicts(rows, columns) -> List[Dict[str, Any]]:
+        """
+        Convert database rows to dictionaries.
+
+        Args:
+            rows: Database rows
+            columns: Column names
+
+        Returns:
+            List of dictionaries
+        """
+        return [dict(zip(columns, row)) for row in rows]
+
     def _initialize_default_databases(self):
         """Initialize default database connections."""
         # Source database
@@ -54,15 +68,18 @@ class DatabaseManager:
             ValueError: If database name is not found
         """
         if db_name not in self.engines:
-            raise ValueError(f"Database '{db_name}' not found")
+            available = ", ".join(self.engines.keys())
+            raise ValueError(
+                f"Database '{db_name}' not found. Available databases: {available}"
+            )
         return self.engines[db_name]
 
-    async def list_databases(self) -> Dict[str, List[str]]:
+    async def list_databases(self) -> Dict[str, Any]:
         """
         List all configured databases.
 
         Returns:
-            Dictionary with database names
+            Dictionary with 'databases' (list of database names) and 'count' (number of databases)
         """
         return {"databases": list(self.engines.keys()), "count": len(self.engines)}
 
@@ -74,15 +91,20 @@ class DatabaseManager:
 
         Args:
             db_name: Database name
-            table_name: Table name
+            table_name: Table name (validated by Pydantic model)
             limit: Optional limit on number of records
 
         Returns:
             List of records as dictionaries
+
+        Note:
+            Table names are validated by TransferConfig model to contain only
+            safe characters (alphanumeric and underscores), preventing SQL injection.
         """
         engine = await self.get_engine(db_name)
 
         async with engine.begin() as conn:
+            # Table name is validated by Pydantic model - safe to interpolate
             query = f"SELECT * FROM {table_name}"
             if limit:
                 query += f" LIMIT {limit}"
@@ -90,9 +112,7 @@ class DatabaseManager:
             result = await conn.execute(text(query))
             rows = result.fetchall()
 
-            # Convert rows to dictionaries
-            columns = result.keys()
-            return [dict(zip(columns, row)) for row in rows]
+            return self._rows_to_dicts(rows, result.keys())
 
     async def count_records(self, db_name: str, table_name: str) -> int:
         """
@@ -100,14 +120,19 @@ class DatabaseManager:
 
         Args:
             db_name: Database name
-            table_name: Table name
+            table_name: Table name (validated by Pydantic model)
 
         Returns:
             Number of records
+
+        Note:
+            Table names are validated by TransferConfig model to contain only
+            safe characters (alphanumeric and underscores), preventing SQL injection.
         """
         engine = await self.get_engine(db_name)
 
         async with engine.begin() as conn:
+            # Table name is validated by Pydantic model - safe to interpolate
             result = await conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             count = result.scalar()
             return count or 0
@@ -120,11 +145,16 @@ class DatabaseManager:
 
         Args:
             db_name: Database name
-            table_name: Table name
+            table_name: Table name (validated by Pydantic model)
             records: List of records to insert
 
         Returns:
             Number of records inserted
+
+        Note:
+            Table and column names are validated by TransferConfig model and derived
+            from schema introspection, containing only safe characters, preventing SQL injection.
+            Values are parameterized using SQLAlchemy's text() with named parameters.
         """
         if not records:
             return 0
@@ -132,7 +162,8 @@ class DatabaseManager:
         engine = await self.get_engine(db_name)
 
         async with engine.begin() as conn:
-            # Build insert statement
+            # Build insert statement with parameterized values
+            # Table/column names are from validated schema - safe to interpolate
             columns = list(records[0].keys())
             placeholders = ", ".join([f":{col}" for col in columns])
             columns_str = ", ".join(columns)
@@ -141,7 +172,7 @@ class DatabaseManager:
                 f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})"
             )
 
-            # Execute batch insert
+            # Execute batch insert - values are parameterized
             await conn.execute(text(insert_query), records)
 
         return len(records)
@@ -182,12 +213,17 @@ class DatabaseManager:
 
         Args:
             db_name: Database name
-            table_name: Table name
-            columns: Dictionary of column names to types
+            table_name: Table name (validated by Pydantic model)
+            columns: Dictionary of column names to types (derived from source schema)
+
+        Note:
+            Table and column names are validated or derived from trusted schema introspection.
+            Column types are also from schema introspection, not user input.
         """
         engine = await self.get_engine(db_name)
 
         # Build CREATE TABLE statement
+        # Column names and types are from schema introspection - safe to interpolate
         column_defs = []
         for col_name, col_type in columns.items():
             column_defs.append(f"{col_name} {col_type}")

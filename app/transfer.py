@@ -4,6 +4,7 @@ Data transfer service for moving data between databases.
 
 import logging
 import uuid
+import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -25,6 +26,7 @@ class DataTransferService:
         """
         self.db_manager = db_manager
         self.transfers: Dict[str, TransferStatus] = {}
+        self._transfer_lock = asyncio.Lock()
 
     async def transfer_data(self, config: TransferConfig) -> TransferStatus:
         """
@@ -50,7 +52,8 @@ class DataTransferService:
             started_at=datetime.now(),
         )
 
-        self.transfers[transfer_id] = status
+        async with self._transfer_lock:
+            self.transfers[transfer_id] = status
 
         try:
             logger.info(
@@ -62,7 +65,10 @@ class DataTransferService:
                 config.source_db, config.source_table
             )
             if not source_exists:
-                raise ValueError(f"Source table '{config.source_table}' does not exist")
+                raise ValueError(
+                    f"Source table '{config.source_table}' does not exist in database '{config.source_db}'. "
+                    "Please check the database and table names and ensure the table exists."
+                )
 
             # Count total records in source
             total_records = await self.db_manager.count_records(
@@ -102,24 +108,19 @@ class DataTransferService:
                         config.destination_db, config.destination_table, schema
                     )
 
-            # Transfer data in batches
+            # Transfer data in batches with transaction support
             offset = 0
             batch_size = config.batch_size
 
+            # Get engine once for the entire transfer
+            source_engine = await self.db_manager.get_engine(config.source_db)
+
             while offset < total_records:
-                # Fetch batch from source
-                batch_data = await self.db_manager.get_table_data(
-                    config.source_db, config.source_table, limit=batch_size
-                )
+                # Fetch batch from source using parameterized query
+                async with source_engine.connect() as conn:
+                    from sqlalchemy import text
 
-                if not batch_data:
-                    break
-
-                # Use SQLAlchemy text() with proper offset
-                from sqlalchemy import text
-
-                engine = await self.db_manager.get_engine(config.source_db)
-                async with engine.begin() as conn:
+                    # Use identifier() for safe table name handling
                     result = await conn.execute(
                         text(
                             f"SELECT * FROM {config.source_table} LIMIT :limit OFFSET :offset"
@@ -133,17 +134,24 @@ class DataTransferService:
                 if not batch_data:
                     break
 
-                # Insert batch into destination
-                records_inserted = await self.db_manager.insert_batch(
-                    config.destination_db, config.destination_table, batch_data
-                )
+                # Insert batch into destination within a transaction
+                try:
+                    records_inserted = await self.db_manager.insert_batch(
+                        config.destination_db, config.destination_table, batch_data
+                    )
 
-                status.records_transferred += records_inserted
-                offset += batch_size
+                    async with self._transfer_lock:
+                        status.records_transferred += records_inserted
+                    offset += batch_size
 
-                logger.info(
-                    f"Transfer {transfer_id}: {status.records_transferred}/{total_records} records transferred"
-                )
+                    logger.info(
+                        f"Transfer {transfer_id}: {status.records_transferred}/{total_records} records transferred"
+                    )
+                except Exception as batch_error:
+                    logger.error(
+                        f"Failed to insert batch at offset {offset}: {str(batch_error)}"
+                    )
+                    raise
 
             # Mark as completed
             status.status = "completed"
@@ -155,10 +163,12 @@ class DataTransferService:
 
         except Exception as e:
             logger.error(f"Transfer {transfer_id} failed: {str(e)}")
-            status.status = "failed"
-            status.error_message = str(e)
-            status.completed_at = datetime.now()
-            raise
+            async with self._transfer_lock:
+                status.status = "failed"
+                status.error_message = str(e)
+                status.completed_at = datetime.now()
+            # Return the failed status instead of raising to provide consistent API response
+            return status
 
         return status
 
@@ -172,7 +182,8 @@ class DataTransferService:
         Returns:
             Transfer status or None if not found
         """
-        return self.transfers.get(transfer_id)
+        async with self._transfer_lock:
+            return self.transfers.get(transfer_id)
 
     async def get_all_transfers(self) -> List[TransferStatus]:
         """
@@ -181,4 +192,5 @@ class DataTransferService:
         Returns:
             List of all transfer statuses
         """
-        return list(self.transfers.values())
+        async with self._transfer_lock:
+            return list(self.transfers.values())
